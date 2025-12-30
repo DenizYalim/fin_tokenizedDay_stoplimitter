@@ -136,28 +136,45 @@ class Simulator:
 # ----------------------------
 # Runner
 # ----------------------------
-def load_ohlc(csv_path: str) -> List[DayOHLC]:
-    df = pd.read_csv(csv_path)
+import pandas as pd
 
-    # Supports either with Date column or without; only needs OHLC columns.
+def load_ohlc(csv_path: str, ticker: str = "AAPL", n: int = 1000):
     needed = {"Open", "High", "Low", "Close"}
-    missing = needed - set(df.columns)
-    if missing:
-        raise ValueError(f"CSV missing columns: {sorted(missing)}")
 
-    df = df.dropna(subset=["Open", "High", "Low", "Close"])
+    # 1) Try normal single-header CSV
+    df = pd.read_csv(csv_path)
+    if not needed.issubset(df.columns):
+        # 2) Fallback: two header rows (MultiIndex columns from yfinance)
+        df2 = pd.read_csv(csv_path, header=[0, 1])
 
-    days: List[DayOHLC] = []
-    for row in df.itertuples(index=False):
-        days.append(
-            DayOHLC(
-                open=float(getattr(row, "Open")),
-                high=float(getattr(row, "High")),
-                low=float(getattr(row, "Low")),
-                close=float(getattr(row, "Close")),
-            )
-        )
-    return days[-1000:]
+        if not isinstance(df2.columns, pd.MultiIndex):
+            raise ValueError("CSV format not recognized (missing OHLC columns).")
+
+        lvl0 = df2.columns.get_level_values(0)
+        lvl1 = df2.columns.get_level_values(1)
+
+        # choose ticker column group
+        tickers = [t for t in pd.unique(lvl1) if isinstance(t, str) and t and "Unnamed" not in t]
+        if not tickers:
+            raise ValueError("Could not find ticker columns in MultiIndex CSV.")
+
+        t = ticker if ticker in tickers else tickers[0]
+
+        df = df2.loc[:, [("Open", t), ("High", t), ("Low", t), ("Close", t)]].copy()
+        df.columns = ["Open", "High", "Low", "Close"]
+
+    # Coerce to numeric and drop the stray 'AAPL' row (and any other junk rows)
+    for col in ["Open", "High", "Low", "Close"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=["Open", "High", "Low", "Close"]).tail(n).reset_index(drop=True)
+
+    # Return your DayOHLC list (expects DayOHLC dataclass already defined)
+    return [
+        DayOHLC(open=r.Open, high=r.High, low=r.Low, close=r.Close)
+        for r in df.itertuples(index=False)
+    ]
+
 
 
 def run_one_trial(days: List[DayOHLC], seed: int) -> float:
